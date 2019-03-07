@@ -3,56 +3,73 @@
 # set variables
 name=$1
 volume="$(aws ec2 describe-volumes --filters Name=tag:Name,Values=$1* --query "Volumes[*].{ID:VolumeId}" --output text)"
-retention=4
+retention=2
 recipient=""
 
 #DELETE OLD LISTS OF CURRENT SNAPSHOTS AND SORTED
- sudo rm -f createdsnaps
- sudo rm -f sortfile
- sudo rm -f timelist
- sudo rm -f currentsnap
- sudo rm -f todelete
+sudo rm -f createdsnaps
+sudo rm -f sortfile
+sudo rm -f timelist
+sudo rm -f currentsnap
+sudo rm -f todelete
 
-#CREATE THE NEW SNAPSHOT BASED ON ARGUMENTS PASSED . snapshot.sh Volumename
-aws ec2 create-snapshot --volume-id "$volume" --description "$1-$(date +"%Y-%m-%d")" --tag-specifications 'ResourceType=snapshot,Tags=[{Key=Name,Value='$1'}]'
 
-#GET THE SNAPSHOT ID FOR THE NEW SNAPSHOT
-sudo touch currentsnap
-aws ec2 describe-snapshots --filters Name=tag:Name,Values=$1 --query "Snapshots[*].{ID:SnapshotId}" --max-items 1 --output text>>currentsnap
-currentsnap=$(head -n 1 currentsnap)
+#CREATE THE NEW SNAPSHOT AND GET THE NEW ID BASED ON PASSED ARGUMENTS.
+
+sudo touch snap #Temp file for awk
+
+aws ec2 create-snapshot --volume-id $volume  --description "$1-$(date +"%Y-%m-%d")" --tag-specifications 'ResourceType=snapshot,Tags=[{Key=Name,Value='$1'}]' --output text >> snap
+currentsnap=$(awk '{print $4}' snap)
+
+sudo rm -f snap #remove temp file
+
 #echo You just created: $currentsnap
 #echo volume id: $volume
-echo "Snapshot $currentsnap has been created for $name on AWS" | mail -aFrom:" " -s "AWS SNAPSHOT $name" "$recipient"
+
+#SEND EMAIL FOR SNAPSHOT CREATION
+echo "Snapshot $currentsnap has been created for $name on AWS" | mail -aFrom:"admin@domain.com" -s "AWS SNAPSHOT $name" "$recipient"
 
 #UPDATE THE LIST OF CURRENT SNAPSHOTS
- sudo touch createdsnaps
- aws ec2 describe-snapshots --filters Name=tag:Name,Values=$1 --query "Snapshots[*].{ID:SnapshotId}" --output text>>createdsnaps
+sudo touch  createdsnaps
+aws ec2 describe-snapshots --filters Name=tag:Name,Values=$1 --query "Snapshots[*].{ID:SnapshotId}" --output text>>createdsnaps
 
- #FIND TIME THAT EACH SNAPSHOT IS CREATED AND OUTPUT TO FILE
- sudo touch timelist
- sudo touch sortfile
- file="createdsnaps"
- while IFS= read -r id
- do
- aws ec2 describe-snapshots --snapshot-id $id --query "Snapshots[*].{ID:StartTime}" --output text
- done < "$file">>"timelist"
- sort -r timelist >> sortfile
+#SHOW THE LIST OF CURRENT SNAPSHOTS
+SNAP_CREATION=$(cat createdsnaps)
+#echo list of current snapshots: $SNAP_CREATION
 
- #FIND THE OLDEST SNAPSHOT BASED ON THE TIME
- sudo touch todelete
- time=$(tail -n 1 "sortfile")
- aws ec2 describe-snapshots --query 'Snapshots[?StartTime == `'$time'`].{id:SnapshotId}' --owner-ids ############ --output text>>todelete
- deleteme=$(cat todelete)
- #echo This is the snapshot to delete: $deleteme
+#FIND TIME THAT EACH SNAPSHOT IS CREATED AND OUTPUT TO FILE
+sudo touch timelist
+sudo touch sortfile
 
- #DELETE THE OLDEST SNAPSHOT IF IT IS NOT THE ONLY FILE
+file="createdsnaps"
+while IFS=  read -r id
+do
+aws ec2 describe-snapshots --snapshot-id $id --query "Snapshots[*].{ID:StartTime}" --output text
+done < "$file">>"timelist"
+sort -r timelist >> sortfile
+SORTED=$(cat sortfile)
 
- available=$(cat createdsnaps | wc -l)
+#echo the sorted file:$SORTED
 
- if [ $available == $retention ]
- then
+#FIND THE OLDEST SNAPSHOT  BASED ON THE TIME
+sudo touch todelete
+time=$(tail -n 1 "sortfile")
+aws ec2 describe-snapshots --query 'Snapshots[?StartTime == `'$time'`].{id:SnapshotId}' --owner-ids ############ --output text>>/todelete
+deleteme=$(cat todelete)
+
+#echo This is the snapshot to delete: $deleteme
+
+#DELETE THE OLDEST SNAPSHOT IF IT IS NOT THE ONLY FILE
+
+available=$(cat createdsnaps | wc -l)
+
+if [ $available == $retention ]
+  then
  # echo "Your Snapshot will be deleted"
- aws ec2 delete-snapshot --snapshot-id $deleteme
- echo "Snapshot $deleteme has been DELETED for $name on AWS" | mail -aFrom:" " -s "AWS SNAPSHOT $name DELETED" "$recipient"
- fi
+aws ec2 delete-snapshot --snapshot-id $deleteme
+#echo "Snapshot $deleteme has been DELETED for $name on AWS" 
+#EMAIL FOR DELETION
+echo "Snapshot $deleteme has been DELETED for $name on AWS" | mail -aFrom:"admin@domain.com" -s "AWS SNAPSHOT $name DELETED" "$recipient"
+fi
+
 
